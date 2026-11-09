@@ -1,0 +1,165 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-android.yml'
+      - '*.html'
+      - '*.js'
+      - '*.css'
+      - '*.png'
+      - '*.svg'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Prepare offline Android application
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil, urllib.request, urllib.parse, hashlib, re
+          root = Path('build-android')
+          assets = root/'app/src/main/assets'
+          assets.mkdir(parents=True, exist_ok=True)
+          for name in ['index.html','app.js','pricing.js','mobile.js','style.css','mobile.css','logo.svg','icon-192.png','icon-512.png','manifest.webmanifest','sw.js']:
+              shutil.copyfile(name, assets/name)
+          def write(name, text):
+              p=root/name
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(text, encoding='utf-8')
+          write('settings.gradle', '''pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name='BedayaFilamentDesk'
+          include ':app'
+          ''')
+          write('build.gradle', "plugins { id 'com.android.application' version '8.9.1' apply false }\n")
+          write('gradle.properties', 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx3g\n')
+          write('app/build.gradle', '''plugins { id 'com.android.application' }
+          android {
+              namespace 'com.bedaya.filamentdesk'
+              compileSdk 35
+              defaultConfig { applicationId 'com.bedaya.filamentdesk'; minSdk 23; targetSdk 34; versionCode 1; versionName '1.0' }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+          }
+          dependencies { implementation 'androidx.webkit:webkit:1.12.1' }
+          ''')
+          write('app/src/main/AndroidManifest.xml', '''<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+          <application android:label="بداية — حاسبة الفيلمنت" android:icon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:supportsRtl="true" android:allowBackup="false" android:usesCleartextTraffic="false">
+          <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
+          <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+          </activity></application></manifest>''')
+          write('app/src/main/java/com/bedaya/filamentdesk/MainActivity.java', '''package com.bedaya.filamentdesk;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.content.ClipData;
+          import android.content.ClipboardManager;
+          import android.print.PrintManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.view.View;
+          import androidx.webkit.WebViewAssetLoader;
+          public class MainActivity extends Activity {
+              private WebView web;
+              private static final String HOME="https://appassets.androidplatform.net/assets/index.html";
+              @Override public void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  getWindow().setStatusBarColor(0xff004c83);
+                  getWindow().setNavigationBarColor(0xffffffff);
+                  if(android.os.Build.VERSION.SDK_INT>=26) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+                  web=new WebView(this);
+                  web.setBackgroundColor(0xfff2f7fb);
+                  web.getSettings().setJavaScriptEnabled(true);
+                  web.getSettings().setDomStorageEnabled(true);
+                  web.getSettings().setAllowFileAccess(false);
+                  web.getSettings().setAllowContentAccess(false);
+                  web.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+                  WebViewAssetLoader loader=new WebViewAssetLoader.Builder().addPathHandler("/assets/",new WebViewAssetLoader.AssetsPathHandler(this)).build();
+                  web.setWebViewClient(new WebViewClient(){
+                      @Override public WebResourceResponse shouldInterceptRequest(WebView view,WebResourceRequest req){return loader.shouldInterceptRequest(req.getUrl());}
+                      @Override public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest req){return route(view,req.getUrl().toString());}
+                      @Override public boolean shouldOverrideUrlLoading(WebView view,String url){return route(view,url);}
+                      private boolean route(WebView view,String url){
+                          if(url.equals("https://appassets.androidplatform.net/assets/")){view.loadUrl(HOME);return true;}
+                          return !url.startsWith("https://appassets.androidplatform.net/assets/");
+                      }
+                  });
+                  web.addJavascriptInterface(new NativeBridge(),"BedayaAndroid");
+                  setContentView(web);
+                  if(state==null||web.restoreState(state)==null)web.loadUrl(HOME);
+              }
+              @Override protected void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);web.saveState(state);}
+              @Override public void onBackPressed(){if(web.canGoBack())web.goBack();else super.onBackPressed();}
+              public class NativeBridge {
+                  @JavascriptInterface public void copyText(String text){runOnUiThread(()->{ClipboardManager cm=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);cm.setPrimaryClip(ClipData.newPlainText("Bedaya order",text));});}
+                  @JavascriptInterface public void printOrder(){runOnUiThread(()->{PrintManager pm=(PrintManager)getSystemService(PRINT_SERVICE);pm.print("Bedaya order",web.createPrintDocumentAdapter("Bedaya order"),null);});}
+              }
+          }
+          ''')
+          icon=root/'app/src/main/res/mipmap-xxxhdpi/ic_launcher.png'
+          icon.parent.mkdir(parents=True,exist_ok=True)
+          shutil.copyfile('icon-512.png',icon)
+          html=(assets/'index.html').read_text(encoding='utf-8')
+          html=html.replace('</head>','<link rel="stylesheet" href="fonts.css"><style>#installApp,#installPanel{display:none!important}</style></head>')
+          (assets/'index.html').write_text(html,encoding='utf-8')
+          app=(assets/'app.js').read_text(encoding='utf-8')
+          needle='try{await navigator.clipboard.writeText(text);'
+          assert needle in app
+          app=app.replace(needle,"if(window.BedayaAndroid){BedayaAndroid.copyText(text);toast('تم نسخ ملخص الطلب');return}"+needle)
+          app=app.replace("$('#print').onclick=()=>window.print();","$('#print').onclick=()=>BedayaAndroid.printOrder();")
+          (assets/'app.js').write_text(app,encoding='utf-8')
+          mobile=(assets/'mobile.js').read_text(encoding='utf-8')
+          mobile=mobile.replace("if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});",'')
+          (assets/'mobile.js').write_text(mobile,encoding='utf-8')
+          style=(assets/'style.css').read_text(encoding='utf-8')
+          if style.startswith('@import'): style=style.split('\n',1)[1]
+          (assets/'style.css').write_text(style,encoding='utf-8')
+          fonts=''
+          try:
+              url='https://fonts.googleapis.com/css2?family=Alexandria:wght@400;500;600;700;800&family=Poppins:wght@500;600;700;800&display=swap'
+              request=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+              fonts=urllib.request.urlopen(request,timeout=30).read().decode()
+              fontdir=assets/'fonts'
+              fontdir.mkdir(exist_ok=True)
+              for source in set(re.findall(r'url\((https://[^)]+)\)',fonts)):
+                  ext=Path(urllib.parse.urlparse(source).path).suffix or '.woff2'
+                  name=hashlib.sha256(source.encode()).hexdigest()[:16]+ext
+                  (fontdir/name).write_bytes(urllib.request.urlopen(source,timeout=30).read())
+                  fonts=fonts.replace(source,'fonts/'+name)
+          except Exception as error:
+              print('Using bundled platform font fallback:',type(error).__name__)
+              fonts=''
+          (assets/'fonts.css').write_text(fonts,encoding='utf-8')
+          PY
+      - name: Build installable APK
+        run: gradle -p build-android --no-daemon assembleDebug
+      - name: Verify APK signature and package
+        shell: bash
+        run: |
+          mkdir -p output
+          cp build-android/app/build/outputs/apk/debug/app-debug.apk output/Bedaya_Filament_Desk.apk
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$tools/apksigner" verify --verbose output/Bedaya_Filament_Desk.apk
+          "$tools/aapt" dump badging output/Bedaya_Filament_Desk.apk
+          cd output
+          sha256sum Bedaya_Filament_Desk.apk > SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bedaya-Android-APK
+          path: output/*
+          retention-days: 30
